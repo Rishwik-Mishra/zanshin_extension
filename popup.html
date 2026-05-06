@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Zanshin Autofill | PlaceBuddy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Root ───────────────────────────────────────────── */
+    html, body {
+      width: 380px;
+      height: 520px;
+      overflow: hidden;
+      background: #09090b;
+      color: #ffffff;
+      font-family: "Inter", system-ui, sans-serif;
+      font-size: 13px;
+    }
+
+    #root {
+      width: 380px;
+      height: 520px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Subtle ambient glow ─────────────────────────── */
+    #root::before {
+      content: "";
+      position: fixed;
+      width: 300px; height: 300px;
+      top: -120px; right: -100px;
+      background: radial-gradient(circle, rgba(16,185,129,.12) 0%, transparent 65%);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background: #111113;
+      border-bottom: 1px solid #27272a;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .brand-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, #059669, #0891b2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .brand-icon svg {
+      width: 14px;
+      height: 14px;
+      color: #fff;
+    }
+
+    .brand-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      line-height: 1;
+    }
+
+    .brand-sub {
+      font-size: 10px;
+      color: #71717a;
+      margin-top: 2px;
+      line-height: 1;
+    }
+
+    /* Status badge */
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      background: #18181b;
+      border: 1px solid #3f3f46;
+      border-radius: 999px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dot-gray  { background: #71717a; }
+    .dot-green { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,.85); }
+
+    .status-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: #a1a1aa;
+    }
+
+    .status-label.secured { color: #34d399; }
+
+    /* ── Scrollable body ────────────────────────────────── */
+    .body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Section label ──────────────────────────────────── */
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: #52525b;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: 8px;
+    }
+
+    /* ── Drop zone (unified click + drag) ───────────────── */
+    #drop-zone {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 22px 16px;
+      border: 1.5px dashed rgba(52,211,153,.28);
+      border-radius: 10px;
+      cursor: pointer;
+      background: transparent;
+      transition: border-color .2s, background .2s;
+      text-align: center;
+    }
+
+    #drop-zone:hover, #drop-zone.drag-over {
+      border-color: rgba(52,211,153,.6);
+      background: rgba(52,211,153,.04);
+    }
+
+    /* Small upload icon circle */
+    .upload-icon-wrap {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(52,211,153,.1);
+      border: 1px solid rgba(52,211,153,.22);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .upload-icon-wrap svg {
+      width: 16px;
+      height: 16px;
+      color: #34d399;
+    }
+
+    .drop-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: #d4d4d8;
+      line-height: 1.4;
+    }
+
+    .drop-title span { color: #34d399; font-weight: 600; }
+
+    .drop-hint {
+      font-size: 11px;
+      color: #52525b;
+      margin-top: -4px;
+    }
+
+    /* File selected chip */
+    #file-chip {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      background: rgba(52,211,153,.08);
+      border: 1px solid rgba(52,211,153,.22);
+      border-radius: 6px;
+    }
+
+    #file-chip svg { width: 12px; height: 12px; color: #34d399; flex-shrink: 0; }
+
+    #file-name-text {
+      font-size: 11px;
+      font-weight: 500;
+      color: #6ee7b7;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── GDPR note ─────────────────────────────────────── */
+    .gdpr-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin-top: 2px;
+    }
+
+    .gdpr-note svg { width: 11px; height: 11px; color: #3f3f46; flex-shrink: 0; margin-top: 1px; }
+
+    .gdpr-note p {
+      font-size: 10px;
+      color: #52525b;
+      line-height: 1.5;
+    }
+
+    .gdpr-note p em { color: #71717a; font-style: normal; }
+    .gdpr-note p strong { color: #22c55e; font-weight: 500; }
+
+    /* ── SUCCESS PANEL ─────────────────────────────────── */
+    #success-panel { display: none; }
+
+    /* Success banner */
+    .success-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 13px;
+      background: rgba(16,185,129,.08);
+      border: 1px solid rgba(16,185,129,.2);
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+
+    .success-icon-wrap {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: rgba(16,185,129,.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .success-icon-wrap svg { width: 14px; height: 14px; color: #34d399; }
+
+    .success-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #34d399;
+      line-height: 1;
+    }
+
+    .success-sub {
+      font-size: 10px;
+      color: #71717a;
+      margin-top: 3px;
+      line-height: 1;
+    }
+
+    /* Profile card */
+    .profile-card {
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .profile-card-header {
+      padding: 9px 13px;
+      border-bottom: 1px solid #27272a;
+      font-size: 10px;
+      font-weight: 600;
+      color: #52525b;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+    }
+
+    #profile-list { padding: 0 13px; }
+
+    .profile-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid #27272a;
+    }
+
+    .profile-row:last-child { border-bottom: none; }
+
+    .row-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: #52525b;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .row-value {
+      font-size: 12px;
+      font-weight: 500;
+      color: #f4f4f5;
+      text-align: right;
+      word-break: break-all;
+    }
+
+    /* Reset button */
+    #reset-btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 9px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #a1a1aa;
+      background: #27272a;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+
+    #reset-btn:hover { background: #3f3f46; color: #fff; }
+
+    /* ── Footer ─────────────────────────────────────────── */
+    footer {
+      padding: 11px 14px;
+      border-top: 1px solid #27272a;
+      background: #09090b;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Parse button */
+    #parse-btn {
+      width: 100%;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      background: linear-gradient(135deg, #059669 0%, #0d9488 55%, #0891b2 100%);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      box-shadow: 0 3px 14px rgba(13,148,136,.4);
+      transition: opacity .18s, transform .13s, box-shadow .18s;
+    }
+
+    #parse-btn:hover:not(:disabled) {
+      opacity: .88;
+      transform: translateY(-1px);
+      box-shadow: 0 5px 22px rgba(13,148,136,.55);
+    }
+
+    #parse-btn:active:not(:disabled) { transform: translateY(0); }
+
+    #parse-btn:disabled {
+      opacity: .4;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    #btn-icon { width: 14px; height: 14px; flex-shrink: 0; }
+
+    /* Spinner */
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none !important; }
+
+    /* Scrollbar */
+    .body::-webkit-scrollbar { width: 4px; }
+    .body::-webkit-scrollbar-track { background: transparent; }
+    .body::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+  </style>
+</head>
+<body>
+<div id="root">
+
+  <!-- ── HEADER ──────────────────────────────────────────── -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">
+        <!-- Shield check icon (14×14) -->
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0
+               013.598 6 11.99 11.99 0 003 11.75c0 5.592 3.824 10.29
+               9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.867-.47-3.608
+               -1.306-5.1A11.955 11.955 0 0112 2.714z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-name">Zanshin AI</div>
+        <div class="brand-sub">PlaceBuddy Vault</div>
+      </div>
+    </div>
+
+    <div class="status-badge">
+      <span id="status-dot" class="status-dot dot-gray"></span>
+      <span id="status-text" class="status-label">Vault Empty</span>
+    </div>
+  </header>
+
+  <!-- ── SCROLLABLE BODY ──────────────────────────────────── -->
+  <div class="body">
+
+    <!-- UPLOAD SECTION -->
+    <div id="upload-section">
+      <p class="section-label">Secure Resume Ingestion</p>
+
+      <!-- Single unified drop zone — click opens file picker, drag also works -->
+      <div id="drop-zone">
+        <div class="upload-icon-wrap">
+          <!-- Cloud upload icon (16×16) -->
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3
+                 M6.75 19.5a4.5 4.5 0 01-1.41-8.775
+                 5.25 5.25 0 0110.233-2.33 3 3 0
+                 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
+          </svg>
+        </div>
+
+        <div>
+          <p class="drop-title">Drop your <span>PDF Resume</span> here</p>
+          <p class="drop-hint">or click anywhere in this box to browse</p>
+        </div>
+
+        <!-- File selected chip (shown after pick) -->
+        <div id="file-chip">
+          <svg fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd"
+              d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0
+                 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
+              clip-rule="evenodd"/>
+          </svg>
+          <span id="file-name-text"></span>
+        </div>
+      </div>
+
+      <!-- Hidden real file input -->
+      <input type="file" id="file-input" accept=".pdf" class="hidden" />
+
+      <!-- GDPR note -->
+      <div class="gdpr-note" style="margin-top:10px;">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75
+               m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75
+               a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0
+               00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+        </svg>
+        <p>Parsed <em>locally</em> · stored in <em>chrome.storage.local</em> · nothing leaves your device · <strong>GDPR Art. 25</strong></p>
+      </div>
+    </div>
+
+    <!-- SUCCESS SECTION -->
+    <div id="success-panel">
+
+      <!-- Banner -->
+      <div class="success-banner">
+        <div class="success-icon-wrap">
+          <!-- Checkmark icon (14×14) -->
+          <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+          </svg>
+        </div>
+        <div>
+          <div class="success-title">Euro-Profile Secured</div>
+          <div class="success-sub">Saved to local vault · ready to autofill</div>
+        </div>
+      </div>
+
+      <!-- Profile data card -->
+      <div class="profile-card">
+        <div class="profile-card-header">Extracted Profile</div>
+        <div id="profile-list"></div>
+      </div>
+
+      <!-- Reset button -->
+      <button id="reset-btn">↩ Upload a different resume</button>
+    </div>
+
+  </div><!-- end .body -->
+
+  <!-- ── FOOTER ───────────────────────────────────────────── -->
+  <footer>
+    <button id="parse-btn" disabled>
+      <svg id="btn-icon" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0
+             00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0
+             003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0
+             003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0
+             00-3.09 3.09z"/>
+      </svg>
+      <span id="btn-text">Parse &amp; Secure Resume</span>
+      <div id="btn-spinner" class="spinner hidden"></div>
+    </button>
+  </footer>
+
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
