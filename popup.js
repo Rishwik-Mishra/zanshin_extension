@@ -1,5 +1,6 @@
 // ============================================================
-//  Zanshin popup.js — Phase 1 Core Ingestion Logic
+//  Zanshin popup.js — Phase 2.2  (Live API Integration)
+//  Replaces mock setTimeout with real fetch → FastAPI backend
 // ============================================================
 
 "use strict";
@@ -18,33 +19,33 @@ const statusText = document.getElementById("status-text");
 const uploadSection = document.getElementById("upload-section");
 const successPanel = document.getElementById("success-panel");
 const profileList = document.getElementById("profile-list");
-const resetBtn = document.getElementById("reset-btn");
+const resetBtn      = document.getElementById("reset-btn");
+const errorBanner   = document.getElementById("error-banner");
+const errorMsg      = document.getElementById("error-msg");
 
-// ── Mock Euro-JSON (Phase 1 — simulates Gemini LLM output) ──
-const MOCK_EURO_PROFILE = {
-  first_name: "Alex",
-  last_name: "Schmidt",
-  email: "alex.schmidt@example.com",
-  linkedin: "linkedin.com/in/alexschmidt",
-  nationality: "German",
-  visa_sponsorship_needed: false,
-  languages: [
-    { language: "German", level: "Native" },
-    { language: "English", level: "C1" }
-  ],
-  experience_years: 2,
-  notice_period_months: 1
-};
+// ── Backend URL ──────────────────────────────────────────────
+const API_URL = "http://127.0.0.1:8000/api/parse-resume";
 
 // ── State ───────────────────────────────────────────────────
 let selectedFile = null;
 
 // ── Helpers ─────────────────────────────────────────────────
-function setButtonLoading(isLoading) {
+function setButtonLoading(isLoading, label = "Extracting Mega-Profile via Gemini…") {
   parseBtn.disabled = isLoading;
   btnIcon.classList.toggle("hidden", isLoading);
   btnSpinner.classList.toggle("hidden", !isLoading);
-  btnText.textContent = isLoading ? "Extracting Euro-Profile…" : "Parse & Secure Resume";
+  btnText.textContent = isLoading ? label : "Parse & Secure Resume";
+}
+
+// ── Error banner helpers ─────────────────────────────────────
+function showError(message) {
+  errorMsg.textContent = message;
+  errorBanner.style.display = "flex";
+}
+
+function clearError() {
+  errorBanner.style.display = "none";
+  errorMsg.textContent = "";
 }
 
 function setVaultStatus(secured) {
@@ -61,18 +62,51 @@ function showFileChip(name) {
 function buildProfileGrid(profile) {
   profileList.innerHTML = "";
 
+  // ── EuroProfile mega-schema key mapping ──────────────────
+  const name = [
+    profile.legal_first_name,
+    profile.preferred_name ? `"${profile.preferred_name}"` : null,
+    profile.legal_last_name,
+  ].filter(Boolean).join(" ");
+
+  const location = [profile.address_city, profile.address_country]
+    .filter(Boolean).join(", ") || "—";
+
+  const experience = profile.total_years_experience !== undefined
+    ? `${profile.total_years_experience} yr${profile.total_years_experience !== 1 ? "s" : ""}`
+    : "—";
+
+  const notice = profile.current_notice_period_days !== undefined
+    ? `${profile.current_notice_period_days} day${profile.current_notice_period_days !== 1 ? "s" : ""}`
+    : "—";
+
+  const languages = Array.isArray(profile.cefr_languages) && profile.cefr_languages.length
+    ? profile.cefr_languages.map(l => `${l.language} (${l.level})`).join(", ")
+    : "—";
+
+  const visaEntries = Array.isArray(profile.visa_status_by_country) && profile.visa_status_by_country.length
+    ? profile.visa_status_by_country.map(v => `${v.country}: ${v.status}`).join(" · ")
+    : "—";
+
+  const techStack = Array.isArray(profile.tech_stack) && profile.tech_stack.length
+    ? profile.tech_stack.slice(0, 8).join(", ") + (profile.tech_stack.length > 8 ? " …" : "")
+    : "—";
+
   const fields = [
-    { label: "Name", value: `${profile.first_name} ${profile.last_name}` },
-    { label: "Nationality", value: profile.nationality },
-    { label: "Email", value: profile.email },
-    { label: "LinkedIn", value: profile.linkedin },
-    { label: "Experience", value: `${profile.experience_years} yr${profile.experience_years !== 1 ? "s" : ""}` },
-    { label: "Notice", value: `${profile.notice_period_months} month${profile.notice_period_months !== 1 ? "s" : ""}` },
-    { label: "Visa Needed", value: profile.visa_sponsorship_needed ? "Yes" : "No" },
-    { label: "Languages", value: profile.languages.map(l => `${l.language} (${l.level})`).join(", ") },
+    { label: "Name",       value: name || "—" },
+    { label: "Email",      value: profile.email || "—" },
+    { label: "Location",   value: location },
+    { label: "LinkedIn",   value: profile.linkedin_url || "—" },
+    { label: "Education",  value: profile.highest_education_level || "—" },
+    { label: "Graduated",  value: profile.graduation_year || "—" },
+    { label: "Experience", value: experience },
+    { label: "Notice",     value: notice },
+    { label: "Languages",  value: languages },
+    { label: "Visa",       value: visaEntries },
+    { label: "Tech Stack", value: techStack },
   ];
 
-  fields.forEach(({ label, value }, i) => {
+  fields.forEach(({ label, value }) => {
     const row = document.createElement("div");
     row.className = "profile-row";
     row.innerHTML = `
@@ -151,40 +185,77 @@ dropZone.addEventListener("drop", (e) => {
   if (file) handleFileSelected(file);
 });
 
-// ── Parse & Secure button ────────────────────────────────────
-parseBtn.addEventListener("click", () => {
-  if (!selectedFile && !parseBtn.disabled) return;
+// ── Parse & Secure button — Phase 2.2 (live API) ────────────
+parseBtn.addEventListener("click", async () => {
+  // Guard: must have a file selected
+  if (!selectedFile) {
+    showError("Please select a PDF resume before parsing.");
+    return;
+  }
 
-  // 1. Loading state
+  // Clear any previous error and enter loading state
+  clearError();
   setButtonLoading(true);
 
-  // 2. Simulate 2-second backend latency (future: Python/Gemini call)
-  setTimeout(async () => {
-    try {
-      // 3. Save mock profile to chrome.storage.local
-      await chrome.storage.local.set({
-        zanshin_user_profile: MOCK_EURO_PROFILE,
-        zanshin_vault_status: "secured",
-        zanshin_secured_at: new Date().toISOString(),
-      });
+  try {
+    // ── 1. Build multipart/form-data payload ──────────────
+    // Do NOT set Content-Type manually — browser adds the boundary
+    const formData = new FormData();
+    formData.append("file", selectedFile);
 
-      console.log("[Zanshin] Profile secured in vault:", MOCK_EURO_PROFILE);
+    // ── 2. POST to FastAPI backend ────────────────────────
+    console.log("[Zanshin] Sending resume to backend:", API_URL);
+    const response = await fetch(API_URL, {
+      method: "POST",
+      body: formData,
+    });
 
-      // 4. Update UI to success state
-      showSuccessPanel(MOCK_EURO_PROFILE);
-
-    } catch (err) {
-      console.error("[Zanshin] Storage error:", err);
-      setButtonLoading(false);
-      alert("❌ Failed to save profile. Please try again.");
+    // ── 3. Handle non-2xx HTTP errors ────────────────────
+    if (!response.ok) {
+      let detail = `Server returned ${response.status}`;
+      try {
+        const errBody = await response.json();
+        detail = errBody.detail || detail;
+      } catch (_) { /* ignore JSON parse failures */ }
+      throw new Error(detail);
     }
-  }, 2000);
+
+    // ── 4. Parse the EuroProfile JSON ────────────────────
+    const euroProfile = await response.json();
+    console.log("[Zanshin] EuroProfile received:", euroProfile);
+
+    // ── 5. Persist to chrome.storage.local ───────────────
+    await chrome.storage.local.set({
+      zanshin_user_profile: euroProfile,
+      zanshin_vault_status: "secured",
+      zanshin_secured_at:   new Date().toISOString(),
+    });
+    console.log("[Zanshin] Profile saved to vault.");
+
+    // ── 6. Transition to success UI ───────────────────────
+    showSuccessPanel(euroProfile);
+
+  } catch (err) {
+    // ── Error state: visible red banner, button reset ─────
+    console.error("[Zanshin] Parse failed:", err);
+    setButtonLoading(false);
+
+    const isNetworkError = err instanceof TypeError && err.message.includes("fetch");
+    showError(
+      isNetworkError
+        ? "Cannot reach the backend. Is `uvicorn main:app` running on port 8000?"
+        : `Parsing failed: ${err.message}`
+    );
+  }
 });
 
 // ── Reset button ─────────────────────────────────────────────
 resetBtn.addEventListener("click", async () => {
   // Clear vault
   await chrome.storage.local.remove(["zanshin_user_profile", "zanshin_vault_status", "zanshin_secured_at"]);
+
+  // Clear any stale error banners
+  clearError();
 
   // Reset state
   selectedFile = null;

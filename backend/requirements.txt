@@ -1,0 +1,30 @@
+# ============================================================
+#  Zanshin Backend — requirements.txt
+#  Phase 2.1 dependencies
+# ============================================================
+
+# ── Web framework ────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+
+# ── Request body / file uploads ─────────────────────────────
+python-multipart>=0.0.9
+
+# ── Data validation ─────────────────────────────────────────
+pydantic>=2.9.2
+
+# ── Environment / secrets ────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── Gemini LLM (Google GenAI SDK) ───────────────────────────
+google-genai>=1.0.0
+
+# ── PDF extraction — native text layer ──────────────────────
+PyMuPDF>=1.24.9
+
+# ── OCR fallback (scanned/image PDFs) ───────────────────────
+pytesseract>=0.3.10
+Pillow>=10.0
+
+# ── DOCX support (future: multi-format uploads) ─────────────
+python-docx>=1.1.0
