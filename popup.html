@@ -346,6 +346,37 @@
 
     #reset-btn:hover { background: #3f3f46; color: #fff; }
 
+    /* ── Autofill action button (Phase 3.2 production) ─── */
+    #autofill-action-btn {
+      width: 100%;
+      margin-bottom: 8px;
+      padding: 11px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(135deg, #059669 0%, #0d9488 55%, #0891b2 100%);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      letter-spacing: .02em;
+      box-shadow: 0 3px 14px rgba(13,148,136,.45);
+      transition: opacity .18s, transform .13s, box-shadow .18s;
+    }
+
+    #autofill-action-btn:hover:not(:disabled) {
+      opacity: .88;
+      transform: translateY(-1px);
+      box-shadow: 0 5px 22px rgba(13,148,136,.6);
+    }
+
+    #autofill-action-btn:active:not(:disabled) { transform: translateY(0); }
+
+    #autofill-action-btn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
     /* ── Footer ─────────────────────────────────────────── */
     footer {
       padding: 11px 14px;
@@ -529,6 +560,9 @@
         <div class="profile-card-header">Extracted Profile</div>
         <div id="profile-list"></div>
       </div>
+
+      <!-- Primary autofill trigger -->
+      <button id="autofill-action-btn">⚡ Autofill Application</button>
 
       <!-- Reset button -->
       <button id="reset-btn">↩ Upload a different resume</button>

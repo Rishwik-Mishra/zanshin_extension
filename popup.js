@@ -289,3 +289,83 @@ resetBtn.addEventListener("click", async () => {
     console.warn("[Zanshin] Could not read storage on init:", err);
   }
 })();
+
+// ── Phase 3.2 — Production autofill action trigger ───────────
+const autofillBtn     = document.getElementById("autofill-action-btn");
+const AUTOFILL_LABEL  = "⚡ Autofill Application";
+const LOADING_LABEL   = "Injecting Data…";
+
+/**
+ * Set the autofill button into loading or idle state.
+ * @param {boolean} isLoading
+ * @param {string}  [label] - optional override for the idle label
+ */
+function setAutofillLoading(isLoading, label = AUTOFILL_LABEL) {
+  autofillBtn.disabled    = isLoading;
+  autofillBtn.textContent = isLoading ? LOADING_LABEL : label;
+}
+
+autofillBtn.addEventListener("click", async () => {
+  console.log("[Zanshin] ⚡ Autofill Application triggered.");
+
+  // ── Enter loading state immediately ──────────────────────
+  setAutofillLoading(true);
+
+  // ── 1. Resolve the active tab ─────────────────────────────
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  } catch (err) {
+    console.error("[Zanshin] chrome.tabs.query failed:", err);
+    setAutofillLoading(false);
+    return;
+  }
+
+  const activeTab = tabs?.[0];
+  if (!activeTab?.id) {
+    console.error("[Zanshin] No active tab found — cannot send message.");
+    setAutofillLoading(false);
+    return;
+  }
+
+  console.log(`[Zanshin] Sending ACTION_AUTOFILL → tab #${activeTab.id} (${activeTab.url})`);
+
+  // ── 2. Dispatch ACTION_AUTOFILL to the content script ─────
+  chrome.tabs.sendMessage(
+    activeTab.id,
+    { action: "ACTION_AUTOFILL" },
+    (response) => {
+      // ── Error: runtime / messaging failure ───────────────
+      if (chrome.runtime.lastError) {
+        console.error(
+          "[Zanshin] ❌ Message failed — did you reload the target page after loading the extension?\n" +
+          "  Error:", chrome.runtime.lastError.message
+        );
+        setAutofillLoading(false);
+        return;
+      }
+
+      // ── Error: no response object ─────────────────────────
+      if (!response) {
+        console.warn("[Zanshin] ⚠️ No response from content script.");
+        setAutofillLoading(false);
+        return;
+      }
+
+      // ── Success path ──────────────────────────────────────
+      if (response.success) {
+        const count = response.injected ?? 0;
+        console.log(`[Zanshin] ✅ Autofill complete — ${count} field(s) injected.`, response);
+
+        // Briefly show confirmation label, then reset to idle
+        autofillBtn.textContent = `✅ ${count} field${count !== 1 ? "s" : ""} filled!`;
+        setTimeout(() => setAutofillLoading(false), 2000);
+
+      // ── Error path (pipeline error returned from content.js) ──
+      } else {
+        console.error("[Zanshin] ❌ Autofill pipeline error:", response.error, response);
+        setAutofillLoading(false);
+      }
+    }
+  );
+});

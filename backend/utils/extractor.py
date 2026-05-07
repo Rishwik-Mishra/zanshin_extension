@@ -40,16 +40,44 @@ except ImportError as exc:
 
 def _extract_pdf_native(file_bytes: bytes) -> str:
     """
-    Extract text from PDF bytes using PyMuPDF (fitz).
-    Operates fully in memory via stream parameter — no temp files.
-    Returns empty string on any error so callers can decide to fallback.
+    Extract text and embedded hyperlink annotations from PDF bytes using
+    PyMuPDF (fitz).  Operates fully in memory via stream parameter — no
+    temp files.  Returns empty string on any error so callers can decide
+    to fallback.
+
+    Hyperlink extraction:
+        Iterates page.get_links() on every page; any entry whose ``kind``
+        equals ``fitz.LINK_URI`` has its ``uri`` value collected into a
+        deduplication set.  Unique URIs are appended at the very bottom of
+        the returned string under the header::
+
+            --- EXTRACTED HYPERLINKS ---
+
+        This surfaces URLs that are attached to icon/image annotations and
+        therefore invisible to plain text extraction (e.g., a LinkedIn logo
+        that is a clickable link with no surrounding text).
     """
     text = ""
+    uri_set: set[str] = set()
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for page in doc:
                 text += page.get_text()
-        logger.debug("[Extractor] PyMuPDF: extracted %d characters", len(text))
+                for link in page.get_links():
+                    if link.get("kind") == fitz.LINK_URI:
+                        uri = link.get("uri", "").strip()
+                        if uri:
+                            uri_set.add(uri)
+
+        logger.debug(
+            "[Extractor] PyMuPDF: extracted %d characters, %d unique hyperlinks",
+            len(text), len(uri_set),
+        )
+
+        if uri_set:
+            text += "\n--- EXTRACTED HYPERLINKS ---\n"
+            text += "\n".join(sorted(uri_set))
+
     except Exception as exc:
         logger.error("[Extractor] PyMuPDF extraction failed: %s", exc)
     return text
