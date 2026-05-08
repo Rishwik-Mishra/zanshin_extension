@@ -19,9 +19,9 @@ const statusText = document.getElementById("status-text");
 const uploadSection = document.getElementById("upload-section");
 const successPanel = document.getElementById("success-panel");
 const profileList = document.getElementById("profile-list");
-const resetBtn      = document.getElementById("reset-btn");
-const errorBanner   = document.getElementById("error-banner");
-const errorMsg      = document.getElementById("error-msg");
+const resetBtn = document.getElementById("reset-btn");
+const errorBanner = document.getElementById("error-banner");
+const errorMsg = document.getElementById("error-msg");
 
 // ── Backend URL ──────────────────────────────────────────────
 const API_URL = "http://127.0.0.1:8000/api/parse-resume";
@@ -93,16 +93,16 @@ function buildProfileGrid(profile) {
     : "—";
 
   const fields = [
-    { label: "Name",       value: name || "—" },
-    { label: "Email",      value: profile.email || "—" },
-    { label: "Location",   value: location },
-    { label: "LinkedIn",   value: profile.linkedin_url || "—" },
-    { label: "Education",  value: profile.highest_education_level || "—" },
-    { label: "Graduated",  value: profile.graduation_year || "—" },
+    { label: "Name", value: name || "—" },
+    { label: "Email", value: profile.email || "—" },
+    { label: "Location", value: location },
+    { label: "LinkedIn", value: profile.linkedin_url || "—" },
+    { label: "Education", value: profile.highest_education_level || "—" },
+    { label: "Graduated", value: profile.graduation_year || "—" },
     { label: "Experience", value: experience },
-    { label: "Notice",     value: notice },
-    { label: "Languages",  value: languages },
-    { label: "Visa",       value: visaEntries },
+    { label: "Notice", value: notice },
+    { label: "Languages", value: languages },
+    { label: "Visa", value: visaEntries },
     { label: "Tech Stack", value: techStack },
   ];
 
@@ -228,7 +228,7 @@ parseBtn.addEventListener("click", async () => {
     await chrome.storage.local.set({
       zanshin_user_profile: euroProfile,
       zanshin_vault_status: "secured",
-      zanshin_secured_at:   new Date().toISOString(),
+      zanshin_secured_at: new Date().toISOString(),
     });
     console.log("[Zanshin] Profile saved to vault.");
 
@@ -291,9 +291,9 @@ resetBtn.addEventListener("click", async () => {
 })();
 
 // ── Phase 3.2 — Production autofill action trigger ───────────
-const autofillBtn     = document.getElementById("autofill-action-btn");
-const AUTOFILL_LABEL  = "⚡ Autofill Application";
-const LOADING_LABEL   = "Injecting Data…";
+const autofillBtn = document.getElementById("autofill-action-btn");
+const AUTOFILL_LABEL = "⚡ Autofill Application";
+const LOADING_LABEL = "Injecting Data…";
 
 /**
  * Set the autofill button into loading or idle state.
@@ -301,7 +301,7 @@ const LOADING_LABEL   = "Injecting Data…";
  * @param {string}  [label] - optional override for the idle label
  */
 function setAutofillLoading(isLoading, label = AUTOFILL_LABEL) {
-  autofillBtn.disabled    = isLoading;
+  autofillBtn.disabled = isLoading;
   autofillBtn.textContent = isLoading ? LOADING_LABEL : label;
 }
 
@@ -361,11 +361,180 @@ autofillBtn.addEventListener("click", async () => {
         autofillBtn.textContent = `✅ ${count} field${count !== 1 ? "s" : ""} filled!`;
         setTimeout(() => setAutofillLoading(false), 2000);
 
-      // ── Error path (pipeline error returned from content.js) ──
+        // ── Error path (pipeline error returned from content.js) ──
       } else {
         console.error("[Zanshin] ❌ Autofill pipeline error:", response.error, response);
         setAutofillLoading(false);
       }
     }
   );
+});
+
+// ============================================================
+//  Mock Vault — Token Economics Pivot (Phase 3.2)
+// ============================================================
+//
+//  Keyboard shortcut: press '1', '2', '3', or '4' while the
+//  popup is open to instantly load the corresponding hardcoded
+//  EuroProfile into chrome.storage.local, then show the success
+//  panel — no backend call, no API cost, zero latency.
+//
+//  Profiles strictly match the EuroProfile Pydantic mega-schema
+//  (see backend/main.py → class EuroProfile).
+//
+//  To restore live Gemini parsing:
+//    1. Remove or comment out this entire block.
+//    2. Restore the parse_resume endpoint from main_gemini_archive.py.
+// ============================================================
+
+const mockVault = {
+  "1": {
+    legal_first_name: "Rishwik",
+    legal_last_name: "Mishra",
+    preferred_name: null,
+    address_city: "Bangalore",
+    address_country: "India",
+    email: "rishwik.mishra@example.com",
+    phone_with_country_code: "+91 9876543210",
+    linkedin_url: "https://linkedin.com/in/rishwik-mishra",
+    github_url: "https://github.com/rishwik-mishra",
+    portfolio_url: "https://rishwik.dev",
+    highest_education_level: "Bachelor's Degree",
+    university_name: "Nitte Meenakshi Institute of Technology",
+    graduation_year: "2027",
+    total_years_experience: 1.5,
+    current_notice_period_days: 30,
+    visa_status_by_country: [
+      { country: "EU", status: "Requires Sponsorship" },
+      { country: "India", status: "Citizen" },
+    ],
+    cefr_languages: [
+      { language: "English", level: "C1" },
+      { language: "Hindi", level: "Native" },
+    ],
+    tech_stack: ["React", "FastAPI", "Python", "Node.js"],
+    gender: "Male",
+    current_address: "12 MG Road, Bangalore, India",
+  },
+
+  "2": {
+    legal_first_name: "Sarah",
+    legal_last_name: "Jenkins",
+    preferred_name: "Sarah",
+    address_city: "Berlin",
+    address_country: "Germany",
+    email: "sarah.j.frontend@example.com",
+    phone_with_country_code: "+49 151 23456789",
+    linkedin_url: "https://linkedin.com/in/sarahjenkins",
+    github_url: "https://github.com/sarah-ui",
+    portfolio_url: null,
+    highest_education_level: "Master's Degree",
+    university_name: "Technical University of Munich",
+    graduation_year: "2023",
+    total_years_experience: 4.0,
+    current_notice_period_days: 60,
+    visa_status_by_country: [
+      { country: "Germany", status: "Blue Card" },
+    ],
+    cefr_languages: [
+      { language: "English", level: "Native" },
+      { language: "German", level: "B2" },
+    ],
+    tech_stack: ["Vue.js", "TypeScript", "Tailwind", "Figma"],
+    gender: "Female",
+    current_address: "Friedrichstrasse 45, Berlin, Germany",
+  },
+
+  "3": {
+    legal_first_name: "David",
+    legal_last_name: "Chen",
+    preferred_name: "Dave",
+    address_city: "London",
+    address_country: "UK",
+    email: "d.chen.data@example.com",
+    phone_with_country_code: "+44 7911 123456",
+    linkedin_url: "https://linkedin.com/in/davidchendata",
+    github_url: "https://github.com/dchen-ml",
+    portfolio_url: null,
+    highest_education_level: "PhD",
+    university_name: "Imperial College London",
+    graduation_year: "2022",
+    total_years_experience: 3.5,
+    current_notice_period_days: 15,
+    visa_status_by_country: [
+      { country: "UK", status: "Indefinite Leave to Remain" },
+    ],
+    cefr_languages: [
+      { language: "English", level: "Native" },
+      { language: "Mandarin", level: "Native" },
+    ],
+    tech_stack: ["Python", "PyTorch", "SQL", "Pandas"],
+    gender: "Male",
+    current_address: "15 Exhibition Road, London, UK",
+  },
+
+  "4": {
+    legal_first_name: "Elena",
+    legal_last_name: "Rossi",
+    preferred_name: null,
+    address_city: "Milan",
+    address_country: "Italy",
+    email: "elena.product@example.com",
+    phone_with_country_code: "+39 333 1234567",
+    linkedin_url: "https://linkedin.com/in/elenarossipm",
+    github_url: null,
+    portfolio_url: null,
+    highest_education_level: "Bachelor's Degree",
+    university_name: "Politecnico di Milano",
+    graduation_year: "2020",
+    total_years_experience: 6.0,
+    current_notice_period_days: 90,
+    visa_status_by_country: [
+      { country: "EU", status: "Citizen" },
+    ],
+    cefr_languages: [
+      { language: "Italian", level: "Native" },
+      { language: "English", level: "C1" },
+      { language: "French", level: "B1" },
+    ],
+    tech_stack: ["Jira", "Agile", "Scrum", "SQL"],
+    gender: "Other",
+    current_address: "Via Torino 8, Milan, Italy",
+  },
+};
+
+// ── Mock Vault keyboard trigger ──────────────────────────────
+//
+//  Pressing '1'–'4' anywhere in the popup document loads the
+//  matching profile from mockVault into chrome.storage.local
+//  and immediately shows the success panel — no network call.
+//
+document.addEventListener("keydown", async (e) => {
+  const key = e.key; // "1" | "2" | "3" | "4" | anything else
+
+  if (!["1", "2", "3", "4"].includes(key)) return; // ignore all other keys
+
+  const profile = mockVault[key];
+  if (!profile) return; // defensive — should never happen
+
+  console.log(
+    `[Zanshin MockVault] Loading profile ${key}: ${profile.legal_first_name} ${profile.legal_last_name}`
+  );
+
+  try {
+    // Persist to chrome.storage.local — same contract as the live API path
+    await chrome.storage.local.set({
+      zanshin_user_profile: profile,
+      zanshin_vault_status: "secured",
+      zanshin_secured_at: new Date().toISOString(),
+    });
+
+    console.log(`[Zanshin MockVault] Profile ${key} saved to vault.`);
+
+    // Transition to success UI — reuses the exact same function as the API path
+    showSuccessPanel(profile);
+
+  } catch (err) {
+    console.error("[Zanshin MockVault] Failed to save profile to storage:", err);
+  }
 });
