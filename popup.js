@@ -29,6 +29,12 @@ const API_URL = "http://127.0.0.1:8000/api/parse-resume";
 // ── State ───────────────────────────────────────────────────
 let selectedFile = null;
 
+// ── Relational Vault ─────────────────────────────────────────
+//  Caches Base64 resume strings keyed by profile number (1-4).
+//  Populated from chrome.storage on init; updated on every upload.
+let userResumeCache = { 1: null, 2: null, 3: null, 4: null };
+let currentActiveProfileNumber = null;
+
 // ── Helpers ─────────────────────────────────────────────────
 function setButtonLoading(isLoading, label = "Extracting Mega-Profile via Gemini…") {
   parseBtn.disabled = isLoading;
@@ -280,7 +286,19 @@ resetBtn.addEventListener("click", async () => {
 // ── On popup open: restore state from storage ────────────────
 (async function initPopup() {
   try {
-    const stored = await chrome.storage.local.get(["zanshin_user_profile", "zanshin_vault_status"]);
+    // Hydrate the Relational Vault cache before anything else
+    const stored = await chrome.storage.local.get([
+      "zanshin_user_profile",
+      "zanshin_vault_status",
+      "zanshin_resume_cache",
+    ]);
+
+    if (stored.zanshin_resume_cache) {
+      // Merge persisted cache into our in-memory object (preserving defaults)
+      Object.assign(userResumeCache, stored.zanshin_resume_cache);
+      console.log("[Zanshin] Relational Vault cache hydrated from storage.");
+    }
+
     if (stored.zanshin_vault_status === "secured" && stored.zanshin_user_profile) {
       console.log("[Zanshin] Existing vault loaded on popup open.");
       showSuccessPanel(stored.zanshin_user_profile);
@@ -385,6 +403,30 @@ autofillBtn.addEventListener("click", async () => {
 //  To restore live Gemini parsing:
 //    1. Remove or comment out this entire block.
 //    2. Restore the parse_resume endpoint from main_gemini_archive.py.
+//
+// ── Storage Constraints (MUST READ before editing resume_base64) ─
+//
+//  Chrome enforces a default 5 MB quota on chrome.storage.local.
+//  We do NOT request the `unlimitedStorage` permission — it requires
+//  additional review and is unnecessary for a single-resume workflow.
+//
+//  Rules that ALL upload handlers and vault writers MUST follow:
+//
+//    1. ONE resume per user, ever.  Storing multiple PDFs as Base64
+//       strings would exhaust the quota in 2-3 files.
+//
+//    2. Hard file-size limit: < 2 MB raw (≈ 2.67 MB Base64).
+//       Reject any upload exceeding this before encoding.
+//       Example guard:
+//         if (file.size > 2 * 1024 * 1024) { showError("Resume must be under 2 MB"); return; }
+//
+//    3. ALWAYS OVERWRITE — never append.  When saving a new resume,
+//       write `resume_base64` as a single chrome.storage.local.set()
+//       call that replaces the existing value entirely.
+//       Never accumulate multiple base64 keys.
+//
+//    4. When the user clears their vault, explicitly set
+//       `resume_base64: null` to reclaim the quota immediately.
 // ============================================================
 
 const mockVault = {
@@ -415,6 +457,11 @@ const mockVault = {
     tech_stack: ["React", "FastAPI", "Python", "Node.js"],
     gender: "Male",
     current_address: "12 MG Road, Bangalore, India",
+    address_state: "Karnataka",
+    // Minimal valid single-page PDF — "Hello World" in Times-Roman, 559 bytes raw.
+    // Generated offline; safe to use as a DataTransfer injection test fixture.
+    // OVERWRITE this value (never append) to stay within the Chrome 5 MB quota.
+    resume_base64: "JVBERi0xLjcKCjEgMCBvYmogICUgZW50cnkgcG9pbnQKPDwKICAvVHlwZSAvQ2F0YWxvZwogIC9QYWdlcyAyIDAgUgo+PgplbmRvYmoKCjIgMCBvYmoKPDwKICAvVHlwZSAvUGFnZXMKICAvTWVkaWFCb3ggWyAwIDAgMjAwIDIwMCBdCiAgL0NvdW50IDEKICAvS2lkcyBbIDMgMCBSIF0KPj4KZW5kb2JqCgozIDAgb2JqCjw8CiAgL1R5cGUgL1BhZ2UKICAvUGFyZW50IDIgMCBSCiAgL1Jlc291cmNlcyA8PAogICAgL0ZvbnQgPDwKICAgICAgL0YxIDQgMCBSCgkJPj4KICA+PgogIC9Db250ZW50cyA1IDAgUgo+PgplbmRvYmoKCjQgMCBvYmoKPDwKICAvVHlwZSAvRm9udAogIC9TdWJ0eXBlIC9UeXBlMQogIC9CYXNlRm9udCAvVGltZXMtUm9tYW4KPj4KZW5kb2JqCgo1IDAgb2JqCjw8IC9MZW5ndGggMzggPj4Kc3RyZWFtCkJUCi9GMSAxOCBUZgoyMCAxNTAgVGQKKEhlbGxvIFdvcmxkKSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCgp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTAgMDAwMDAgbiAKMDAwMDAwMDA2NyAwMDAwMCBuIAowMDAwMDAwMTYxIDAwMDAwIG4gCjAwMDAwMDAyNjAgMDAwMDAgbiAKMDAwMDAwMDM0NiAwMDAwMCBuIAp0cmFpbGVyCjw8CiAgL1NpemUgNgogIC9Sb290IDEgMCBSCj4+CnN0YXJ0eHJlZgo0MzYKJSVFT0YK",
   },
 
   "2": {
@@ -443,6 +490,8 @@ const mockVault = {
     tech_stack: ["Vue.js", "TypeScript", "Tailwind", "Figma"],
     gender: "Female",
     current_address: "Friedrichstrasse 45, Berlin, Germany",
+    address_state: "Berlin",
+    resume_base64: null, // No resume stored — upload via the popup to populate.
   },
 
   "3": {
@@ -471,6 +520,8 @@ const mockVault = {
     tech_stack: ["Python", "PyTorch", "SQL", "Pandas"],
     gender: "Male",
     current_address: "15 Exhibition Road, London, UK",
+    address_state: "England",
+    resume_base64: null, // No resume stored — upload via the popup to populate.
   },
 
   "4": {
@@ -500,6 +551,8 @@ const mockVault = {
     tech_stack: ["Jira", "Agile", "Scrum", "SQL"],
     gender: "Other",
     current_address: "Via Torino 8, Milan, Italy",
+    address_state: "Lombardy",
+    resume_base64: null, // No resume stored — upload via the popup to populate.
   },
 };
 
@@ -514,27 +567,180 @@ document.addEventListener("keydown", async (e) => {
 
   if (!["1", "2", "3", "4"].includes(key)) return; // ignore all other keys
 
-  const profile = mockVault[key];
-  if (!profile) return; // defensive — should never happen
+  const baseProfile = mockVault[key];
+  if (!baseProfile) return; // defensive — should never happen
+
+  // ── Step 2 (Step 3 in spec): Set active profile number ─────
+  currentActiveProfileNumber = parseInt(key, 10);
 
   console.log(
-    `[Zanshin MockVault] Loading profile ${key}: ${profile.legal_first_name} ${profile.legal_last_name}`
+    `[Zanshin MockVault] Loading profile ${key}: ${baseProfile.legal_first_name} ${baseProfile.legal_last_name}`
   );
 
-  try {
-    // Persist to chrome.storage.local — same contract as the live API path
-    await chrome.storage.local.set({
-      zanshin_user_profile: profile,
-      zanshin_vault_status: "secured",
-      zanshin_secured_at: new Date().toISOString(),
-    });
+  // ── Merge Relational Vault resume into the base profile ────
+  //  Deep-copy the base object so we never mutate mockVault.
+  await _saveActiveProfile();
 
-    console.log(`[Zanshin MockVault] Profile ${key} saved to vault.`);
+  // Transition to success UI — reuses the exact same function as the API path
+  showSuccessPanel(_getMergedProfile());
 
-    // Transition to success UI — reuses the exact same function as the API path
-    showSuccessPanel(profile);
-
-  } catch (err) {
-    console.error("[Zanshin MockVault] Failed to save profile to storage:", err);
-  }
+  // Update the upload status label to reflect vault state
+  _refreshUploadStatus();
 });
+
+// ── Relational Vault helpers ──────────────────────────────────
+
+/**
+ * Returns the mockVault base profile merged with any cached resume_base64
+ * for the currently active profile number.
+ * @returns {object}
+ */
+function _getMergedProfile() {
+  if (!currentActiveProfileNumber) return null;
+
+  const key = String(currentActiveProfileNumber);
+  const base = { ...mockVault[key] }; // shallow copy — avoids mutating mockVault
+
+  // Overlay the persisted resume (or null if none)
+  base.resume_base64 = userResumeCache[currentActiveProfileNumber] ?? null;
+
+  return base;
+}
+
+/**
+ * Persists the merged profile (base + resume) to `zanshin_user_profile`
+ * so content.js always has access to the latest combined data.
+ */
+async function _saveActiveProfile() {
+  const merged = _getMergedProfile();
+  if (!merged) return;
+
+  await chrome.storage.local.set({
+    zanshin_user_profile: merged,
+    zanshin_vault_status: "secured",
+    zanshin_secured_at: new Date().toISOString(),
+  });
+
+  console.log(
+    `[Zanshin RelationalVault] Profile ${currentActiveProfileNumber} synced — ` +
+    `resume_base64: ${merged.resume_base64 ? "✅ attached" : "null"}`
+  );
+}
+
+/**
+ * Updates the #uploadStatus paragraph text and CSS class
+ * based on whether a resume is currently in the cache for the active profile.
+ */
+function _refreshUploadStatus() {
+  const el = document.getElementById("uploadStatus");
+  const label = document.getElementById("vault-upload-trigger-label");
+  if (!el) return;
+
+  if (!currentActiveProfileNumber) {
+    el.textContent = "";
+    el.className = "";
+    return;
+  }
+
+  const hasResume = !!userResumeCache[currentActiveProfileNumber];
+  el.textContent = hasResume
+    ? `✅ Resume attached to Profile ${currentActiveProfileNumber}`
+    : `No resume attached — click above to upload`;
+  el.className = hasResume ? "status-ok" : "";
+
+  if (label) {
+    label.textContent = hasResume
+      ? `Replace PDF for Profile ${currentActiveProfileNumber} (max 2 MB)`
+      : `Click to attach PDF (max 2 MB)`;
+  }
+}
+
+// ── Resume upload trigger (Relational Vault) ─────────────────
+const vaultUploadTrigger = document.getElementById("vault-upload-trigger");
+const resumeUploadInput = document.getElementById("resumeUpload");
+const uploadStatus = document.getElementById("uploadStatus");
+
+// Clicking the styled trigger fires the hidden native input
+if (vaultUploadTrigger && resumeUploadInput) {
+  vaultUploadTrigger.addEventListener("click", () => resumeUploadInput.click());
+  vaultUploadTrigger.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") resumeUploadInput.click();
+  });
+}
+
+// ── FileReader & Uploader (Step 4 in spec) ───────────────────
+if (resumeUploadInput) {
+  resumeUploadInput.addEventListener("change", () => {
+    const file = resumeUploadInput.files && resumeUploadInput.files[0];
+    if (!file) return;
+
+    // Guard: must have an active profile loaded first
+    if (!currentActiveProfileNumber) {
+      uploadStatus.textContent = "Error: Press 1–4 to select a profile first.";
+      uploadStatus.className = "status-err";
+      resumeUploadInput.value = "";
+      return;
+    }
+
+    // ── Step 4.1: Validate file size (hard 2 MB limit) ───────
+    const MAX_BYTES = 2 * 1024 * 1024; // 2 MB
+    if (file.size > MAX_BYTES) {
+      uploadStatus.textContent = "Error: File exceeds 2MB limit.";
+      uploadStatus.className = "status-err";
+      resumeUploadInput.value = "";
+      return;
+    }
+
+    uploadStatus.textContent = "Reading file…";
+    uploadStatus.className = "";
+
+    // ── Step 4.2: Read file as Base64 data URL ───────────────
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+
+    // ── Step 4.3–4.7: Process in the onload callback ─────────
+    reader.onload = async (event) => {
+      try {
+        const dataUrl = event.target.result; // "data:application/pdf;base64,<...>"
+
+        // Strip the data-URL prefix — store only the raw Base64 payload
+        const rawBase64 = dataUrl.split(",")[1];
+
+        // ── Step 4.4: Update in-memory cache ─────────────────
+        userResumeCache[currentActiveProfileNumber] = rawBase64;
+
+        // ── Step 4.5: Persist the entire cache object ─────────
+        await chrome.storage.local.set({ zanshin_resume_cache: { ...userResumeCache } });
+
+        // ── Step 4.6: Re-merge and sync the active profile ────
+        await _saveActiveProfile();
+
+        // ── Step 4.7: Success feedback ────────────────────────
+        uploadStatus.textContent =
+          `✅ Resume saved to Profile ${currentActiveProfileNumber}!`;
+        uploadStatus.className = "status-ok";
+
+        // Refresh the trigger label
+        _refreshUploadStatus();
+
+        console.log(
+          `[Zanshin RelationalVault] PDF encoded & saved → profile slot ${currentActiveProfileNumber}` +
+          ` (${(rawBase64.length / 1024).toFixed(1)} KB base64).`
+        );
+      } catch (err) {
+        console.error("[Zanshin RelationalVault] Upload failed:", err);
+        uploadStatus.textContent = `Error: ${err.message}`;
+        uploadStatus.className = "status-err";
+      } finally {
+        // Reset input so same file can be re-uploaded if needed
+        resumeUploadInput.value = "";
+      }
+    };
+
+    reader.onerror = () => {
+      uploadStatus.textContent = "Error: Could not read the file.";
+      uploadStatus.className = "status-err";
+      resumeUploadInput.value = "";
+    };
+  });
+}

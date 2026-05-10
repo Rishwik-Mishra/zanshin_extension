@@ -14,9 +14,54 @@
 // ── Constants ────────────────────────────────────────────────
 const LOG_PREFIX = "[Zanshin:Content]";
 const ACTION_AUTOFILL = "ACTION_AUTOFILL";
-const ACTION_INJECT   = "ACTION_INJECT";   // background → content after mapping
+const ACTION_INJECT = "ACTION_INJECT";   // background → content after mapping
+
+// ── SPA Observer State ───────────────────────────────────────
+//
+//  isZanshinActive  — armed to true on the first ACTION_AUTOFILL message;
+//                     stays true for the lifetime of the tab so the observer
+//                     can re-fire executeZanshinStrike() on every SPA transition.
+//
+//  observerTimeout  — debounce handle; cleared and re-set on every batch of
+//                     mutations so we fire at most once per DOM quiet period.
+//
+//  _spaObserverRef  — singleton guard; prevents double-initialisation if the
+//                     user presses Autofill more than once.
+let isZanshinActive = false;
+let observerTimeout = null;
+let _spaObserverRef = null;
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/**
+ * Shadow DOM Piercer — Big Tech Bypass (Phase 3.3)
+ *
+ * Recursively queries for `selector` starting at `root`, descending
+ * into every element's `.shadowRoot` along the way.  This is the only
+ * reliable way to find inputs inside Web Components such as those used
+ * by Google Jobs, AWS Console career pages, and Optiver's ATS portal.
+ *
+ * Standard document.querySelectorAll() stops dead at a shadow boundary;
+ * this function does not.
+ *
+ * @param {string}        selector  CSS selector (e.g. "input, select, textarea")
+ * @param {Document|ShadowRoot|Element} root  Starting node (defaults to document)
+ * @returns {Element[]}  Flat array of all matching elements across all shadow roots
+ */
+function querySelectorAllDeep(selector, root = document) {
+  // Collect matches at the current root level
+  const elements = Array.from(root.querySelectorAll(selector));
+
+  // Walk every element in this root and recurse into any shadow roots
+  const allElements = Array.from(root.querySelectorAll('*'));
+  for (const el of allElements) {
+    if (el.shadowRoot) {
+      elements.push(...querySelectorAllDeep(selector, el.shadowRoot));
+    }
+  }
+
+  return elements;
+}
 
 /**
  * Returns true when the element is hidden via any of the ATS
@@ -38,16 +83,18 @@ function isHoneypot(el) {
 
   // 2. Computed style checks (catches CSS-class-based hiding)
   const cs = window.getComputedStyle(el);
-  if (cs.display     === "none")    return true;
-  if (cs.visibility  === "hidden")  return true;
-  if (parseFloat(cs.opacity) === 0) return true;
+  if (cs.display === "none") return true;
+  if (cs.visibility === "hidden") return true;
+  // RELAXED FOR MATERIAL DESIGN: Frameworks often hide native inputs with opacity: 0
+  // if (parseFloat(cs.opacity) === 0) return true;
 
   // 3. Aria-hidden (screen-reader honeypots)
   if (el.getAttribute("aria-hidden") === "true") return true;
 
+  // RELAXED FOR MATERIAL DESIGN: Frameworks often use zero-size backing inputs
   // 4. Zero-size trap (1×1 px off-screen fields)
-  const rect = el.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return true;
+  // const rect = el.getBoundingClientRect();
+  // if (rect.width === 0 && rect.height === 0) return true;
 
   return false;
 }
@@ -104,7 +151,8 @@ function resolveLabel(el) {
  */
 function scrapeFormFields() {
   const selectors = "input, select, textarea";
-  const elements  = Array.from(document.querySelectorAll(selectors));
+  // Use the Shadow DOM piercer so embedded Web Components (Big Tech portals) are included
+  const elements = querySelectorAllDeep(selectors);
 
   const fields = [];
 
@@ -120,29 +168,33 @@ function scrapeFormFields() {
     const automationId = el.getAttribute("data-automation-id") || null;
 
     const descriptor = {
-      id:          el.id          || null,
-      name:        el.name        || null,
+      node: el,                          // live DOM reference — Zero-Query Injection
+      id: el.id || null,
+      name: el.name || null,
       automationId,
-      type:        el.type        || el.tagName.toLowerCase(),
+      type: el.type || el.tagName.toLowerCase(),
       placeholder: el.placeholder || null,
-      label:       resolveLabel(el),
-      tag:         el.tagName.toLowerCase(),
-      // Stable selector for injection step:
+      label: resolveLabel(el),
+      tag: el.tagName.toLowerCase(),
+      // Stable selector kept for debugging / legacy ACTION_INJECT path only.
       //   1. id  → #escaped-id
       //   2. name → [name="…"]
       //   3. data-automation-id → [data-automation-id="…"]  (Workday fallback)
-      selector:    el.id
-                     ? `#${CSS.escape(el.id)}`
-                     : el.name
-                       ? `[name="${CSS.escape(el.name)}"]`
-                       : automationId
-                         ? `[data-automation-id="${CSS.escape(automationId)}"]`
-                         : null,
+      selector: el.id
+        ? `#${CSS.escape(el.id)}`
+        : el.name
+          ? `[name="${CSS.escape(el.name)}"]`
+          : automationId
+            ? `[data-automation-id="${CSS.escape(automationId)}"]`
+            : null,
     };
 
-    // Skip fields with no usable identifier whatsoever (can't inject back)
-    if (!descriptor.id && !descriptor.name && !descriptor.automationId) {
-      console.debug(`${LOG_PREFIX} Skipping anonymous element (no id/name/automationId):`, el);
+    // Skip fields with no textual signal at all — resolveFieldKey would return
+    // null anyway, so there is nothing to map.  The node reference itself is
+    // enough to inject once a mapping is resolved.
+    if (!descriptor.id && !descriptor.name && !descriptor.automationId &&
+      !descriptor.placeholder && !descriptor.label) {
+      console.debug(`${LOG_PREFIX} Skipping signal-less element:`, el);
       continue;
     }
 
@@ -167,55 +219,73 @@ function scrapeFormFields() {
 //   throws TypeError when it isn't.  We must call each setter only
 //   on elements that belong to that exact prototype.
 
-const _INPUT_SETTER    = Object.getOwnPropertyDescriptor(
-  window.HTMLInputElement.prototype,    "value"
+const _INPUT_SETTER = Object.getOwnPropertyDescriptor(
+  window.HTMLInputElement.prototype, "value"
 )?.set;
 
 const _TEXTAREA_SETTER = Object.getOwnPropertyDescriptor(
   window.HTMLTextAreaElement.prototype, "value"
 )?.set;
 
-const _SELECT_SETTER   = Object.getOwnPropertyDescriptor(
-  window.HTMLSelectElement.prototype,   "value"
+const _SELECT_SETTER = Object.getOwnPropertyDescriptor(
+  window.HTMLSelectElement.prototype, "value"
 )?.set;
 
 /**
- * Inject the AI-resolved field mapping into the DOM.
+ * Inject mapped values into the DOM — Zero-Query Injection (Phase 3.4)
  *
- * Uses tag-specific native prototype setters so React / Vue / Angular
- * controlled inputs register the programmatic change without throwing
- * "Illegal invocation".
+ * Accepts the Array<{node, value, label}> produced by mapFieldsLocally().
+ * Because the scraper already pinned live DOM references onto each item,
+ * there are ZERO querySelector / getElementById calls in this function.
+ * Each field is O(1) — just a direct property write + two synthetic events.
  *
- * Each field injection is wrapped in its own try/catch so a single
- * broken field never aborts the rest of the batch.
+ * Each field injection is wrapped in its own try/catch so a single broken
+ * field never aborts the rest of the batch.
  *
- * @param {Object} mapping  e.g. { "first_name": "Alice", "email": "alice@example.com" }
+ * @param {Array<{node: Element, value: string, label: string}>} mappedItems
  */
-function injectFieldValues(mapping) {
+function injectFieldValues(mappedItems) {
   let injected = 0;
-  let skipped  = 0;
-  let failed   = 0;
+  let skipped = 0;
+  let failed = 0;
 
-  for (const [key, value] of Object.entries(mapping)) {
-    // Skip empty / null values — nothing to inject
+  for (const item of mappedItems) {
+    const { node: el, value, label } = item;
+
+    // Guard: skip empty / null values — nothing to inject
     if (value === null || value === undefined || value === "") {
-      console.debug(`${LOG_PREFIX} Skipping empty value for key: "${key}"`);
+      console.debug(`${LOG_PREFIX} Skipping empty value for: "${label}"`);
       skipped++;
       continue;
     }
 
-    // ── 1. Resolve DOM element ────────────────────────────────
-    const el =
-      document.getElementById(key) ||
-      document.querySelector(`[name="${CSS.escape(key)}"]`);
-
-    if (!el) {
-      console.warn(`${LOG_PREFIX} No DOM element found for key: "${key}"`);
+    // Guard: node must still be attached to a live document
+    if (!el || !el.isConnected) {
+      console.warn(`${LOG_PREFIX} Node for "${label}" is detached — skipping.`);
       skipped++;
       continue;
     }
 
-    // ── 2. Per-field try/catch: one bad field never kills the batch ──
+    // ── Human Guard (SPA re-fire safety) ─────────────────────
+    //
+    // If the element already has a non-empty value the user may have
+    // typed it manually.  We MUST NOT overwrite human input — doing so
+    // would both be intrusive and could trigger infinite observer loops
+    // (our own synthetic `input` event mutates the DOM → observer fires
+    // again → we overwrite again → …).
+    //
+    // Exemption: radio/checkbox fields are handled separately below and
+    // are allowed through because their "value" attribute is static metadata,
+    // not user-entered text — the checked state is what matters there.
+    if (
+      el.type !== "radio" && el.type !== "checkbox" &&
+      typeof el.value === "string" && el.value.length > 0
+    ) {
+      console.debug(`${LOG_PREFIX} [HumanGuard] "${label}" already filled — preserving user input.`);
+      skipped++;
+      continue;
+    }
+
     try {
       const tag = el.tagName; // "INPUT" | "TEXTAREA" | "SELECT"
       const val = String(value);
@@ -223,34 +293,19 @@ function injectFieldValues(mapping) {
       if (tag === "INPUT" && (el.type === "radio" || el.type === "checkbox")) {
         // ── Radio / Checkbox — click-based injection ──────────────
         //
-        // Custom UI frameworks (React, Bootstrap, MUI, Workday's WD
-        // component library) intercept user events via synthetic event
-        // listeners attached to the document root.  Setting `.checked`
-        // or firing a manual `change` event bypasses those listeners,
-        // causing the visual UI to stay out of sync even though the DOM
-        // property updates.
-        //
-        // Solution: simulate a real human click.
-        //
-        // For radio groups the mapping value is the desired option label
-        // (e.g. "Male").  We find the specific radio whose `value` matches
-        // case-insensitively, then click only that element.
+        // We must find the specific sibling radio whose value / label matches
+        // the desired string.  The group is resolved via querySelectorAllDeep
+        // (Shadow-DOM safe) ONLY here — this is the one place where a sibling
+        // scan is unavoidable, but it is scoped to the specific input group.
 
         const valLower = val.toLowerCase();
-
-        // All radios/checkboxes sharing the same `name` form a group.
-        // If the element has no name, treat it as a lone element.
         const groupName = el.name;
         const candidates = groupName
-          ? Array.from(document.querySelectorAll(
-              `input[type="${el.type}"][name="${CSS.escape(groupName)}"]`
-            ))
+          ? querySelectorAllDeep(`input[type="${el.type}"][name="${CSS.escape(groupName)}"]`)
           : [el];
 
         // Primary match: value attribute (case-insensitive)
-        let target = candidates.find(
-          (r) => r.value.toLowerCase() === valLower
-        );
+        let target = candidates.find((r) => r.value.toLowerCase() === valLower);
 
         // Secondary match: adjacent/wrapping label text (Lever/Bootstrap pattern)
         if (!target) {
@@ -266,50 +321,37 @@ function injectFieldValues(mapping) {
         if (!target) {
           console.warn(
             `${LOG_PREFIX} No radio/checkbox option matching "${val}" ` +
-            `for group "${groupName || key}" — skipping.`
+            `for group "${groupName || label}" — skipping.`
           );
           skipped++;
           continue;
         }
 
-        // Guard: skip if already in the desired state (idempotent)
         if (!target.checked) {
-          // ── Primary: simulate a real click on the input itself ────
-          // Fires the full browser event chain so React / Vue / Angular
-          // reconcile their internal state trees.
           try {
             target.click();
           } catch (_clickErr) {
-            // ── Fallback: click the associated <label> instead ────────
-            // Some frameworks (e.g. Workday WD library) visually detach
-            // the <input> from the rendered component tree.  Clicking the
-            // wrapping or associated label triggers the framework's own
-            // pointer-event handler and achieves the visual state update.
             const fallbackLabel =
               (target.id && document.querySelector(`label[for="${CSS.escape(target.id)}"]`)) ||
               target.closest("label") ||
               target.nextElementSibling;
 
             if (fallbackLabel) {
-              console.debug(
-                `${LOG_PREFIX} radio.click() threw — falling back to label.click() for "${key}"`
-              );
+              console.debug(`${LOG_PREFIX} radio.click() threw — falling back to label.click() for "${label}"`);
               fallbackLabel.click();
             } else {
-              // Last resort: force-set + dispatch (will miss framework listeners)
               target.checked = true;
               target.dispatchEvent(new Event("change", { bubbles: true }));
             }
           }
         } else {
-          console.debug(`${LOG_PREFIX} Radio/checkbox "${key}" already in desired state — no-op.`);
+          console.debug(`${LOG_PREFIX} Radio/checkbox "${label}" already in desired state — no-op.`);
         }
 
-        // Transient green outline as visual feedback
         target.style.outline = "2px solid #34a853";
         setTimeout(() => { target.style.outline = ""; }, 2000);
 
-        console.debug(`${LOG_PREFIX} ✓ Clicked radio/checkbox "${key}" → "${val}" [${el.type}]`);
+        console.debug(`${LOG_PREFIX} ✓ Clicked radio/checkbox "${label}" → "${val}" [${el.type}]`);
         injected++;
         continue; // ← skip the generic event-dispatch + green-fill block below
 
@@ -318,7 +360,7 @@ function injectFieldValues(mapping) {
         if (_INPUT_SETTER) {
           _INPUT_SETTER.call(el, val);
         } else {
-          el.value = val; // safety fallback (should never be needed)
+          el.value = val;
         }
 
       } else if (tag === "TEXTAREA") {
@@ -329,14 +371,12 @@ function injectFieldValues(mapping) {
         }
 
       } else if (tag === "SELECT") {
-        // For <select>, first try direct value assignment via the native setter.
-        // If the exact value isn't an option, fall back to a case-insensitive
-        // text/value search so "united kingdom" matches "United Kingdom".
+        // Case-insensitive option match so "united kingdom" → "United Kingdom"
         const valLower = val.toLowerCase();
         const matchedOption = Array.from(el.options).find(
           (o) =>
             o.value.toLowerCase() === valLower ||
-            o.text.toLowerCase()  === valLower
+            o.text.toLowerCase() === valLower
         );
 
         if (matchedOption) {
@@ -346,42 +386,31 @@ function injectFieldValues(mapping) {
             el.value = matchedOption.value;
           }
         } else {
-          console.warn(
-            `${LOG_PREFIX} No matching <option> for "${key}" = "${val}" — skipping.`
-          );
+          console.warn(`${LOG_PREFIX} No matching <option> for "${label}" = "${val}" — skipping.`);
           skipped++;
           continue;
         }
 
       } else {
-        // Fallback for any other element that exposes a value property
         el.value = val;
       }
 
-      // ── 4. Synthetic events — framework state sync ────────────
+      // ── Synthetic events — framework state sync ───────────────
       // `input`  → triggers React / Vue onChange / v-model
       // `change` → triggers native <select> / Angular ngModel
-      el.dispatchEvent(new Event("input",  { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
 
-      // ── 5. Visual feedback — transient green fill ─────────────
-      // Inline transition so the glow fades out naturally without
-      // requiring any external CSS on the host page.
-      el.style.transition       = "background-color 1.8s ease";
-      el.style.backgroundColor  = "#e6f4ea";
-      // Fade back to transparent after 2 s so the page's own styles win
+      // ── Visual feedback — transient green fill ─────────────────
+      el.style.transition = "background-color 1.8s ease";
+      el.style.backgroundColor = "#e6f4ea";
       setTimeout(() => { el.style.backgroundColor = ""; }, 2000);
 
-      console.debug(`${LOG_PREFIX} ✓ Injected "${key}" → "${val}" [${tag}]`);
+      console.debug(`${LOG_PREFIX} ✓ Injected "${label}" → "${val}" [${tag}]`);
       injected++;
 
     } catch (err) {
-      // One field failing (e.g., cross-origin iframe element) must not
-      // stop the rest of the mapping from being applied.
-      console.error(
-        `${LOG_PREFIX} ✗ Failed to inject "${key}": ${err.message}`,
-        err
-      );
+      console.error(`${LOG_PREFIX} ✗ Failed to inject "${label}": ${err.message}`, err);
       failed++;
     }
   }
@@ -481,6 +510,15 @@ const fieldDictionary = {
     /town/i,
     /locality/i,
     /\blocation\b/i,
+  ],
+  // Workday: addressSection_stateDropdown / addressSection_state
+  address_state: [
+    /addressSection_state/i,         // Workday automation-id
+    /state[\s_-]*province/i,         // combined label "State / Province"
+    /\bstate\b/i,
+    /\bprovince\b/i,
+    /\bregion\b/i,
+    /\bcounty\b/i,
   ],
   address_country: [
     /addressSection_country/i,       // Workday automation-id
@@ -583,16 +621,16 @@ function resolveFieldKey(descriptor) {
   // automationId is included so Workday data-automation-id values
   // (e.g. "legalNameSection_firstName") are matched by the dictionary.
   const signal = [
-    descriptor.id          || "",
-    descriptor.name        || "",
+    descriptor.id || "",
+    descriptor.name || "",
     descriptor.automationId || "",
     descriptor.placeholder || "",
-    descriptor.label       || "",
+    descriptor.label || "",
   ].join(" ").toLowerCase();
 
   if (!signal.trim()) return null;
 
-  let bestKey   = null;
+  let bestKey = null;
   let bestScore = -1;   // lower index in the pattern array = higher score
 
   for (const [profileKey, patterns] of Object.entries(fieldDictionary)) {
@@ -602,7 +640,7 @@ function resolveFieldKey(descriptor) {
         const score = patterns.length - i;
         if (score > bestScore) {
           bestScore = score;
-          bestKey   = profileKey;
+          bestKey = profileKey;
         }
         break; // only the first matching pattern for this key counts
       }
@@ -613,26 +651,30 @@ function resolveFieldKey(descriptor) {
 }
 
 /**
- * Build a { selector → profileValue } mapping entirely offline.
+ * Build an injection list entirely offline — Zero-Query Injection (Phase 3.4)
+ *
+ * Instead of a flat { elementId: value } dict that forces a second DOM lookup
+ * during injection, we now return an Array of objects that carry the live DOM
+ * node reference alongside the resolved string value.  The injector can then
+ * operate in O(1) per field with zero querySelector calls.
  *
  * Flow:
- *   1. For every scraped field, call resolveFieldKey() to find its
- *      EuroProfile key via the heuristic dictionary.
+ *   1. For every scraped field, call resolveFieldKey() to find its EuroProfile key.
  *   2. Look up the value in the stored user profile.
  *   3. Serialize complex values (arrays, objects) to human-readable strings.
- *   4. Return a flat mapping ready for injectFieldValues().
+ *   4. Push { node, value, label } onto the result array.
  *
  * @param {Array<Object>} formFields   Output of scrapeFormFields()
  * @param {Object}        userProfile  EuroProfile from chrome.storage.local
- * @returns {Object}  { elementIdOrName: stringValue }
+ * @returns {Array<{node: Element, value: string, label: string}>}
  */
 function mapFieldsLocally(formFields, userProfile) {
-  const mapping = {};
+  const mappedItems = [];
 
   for (const field of formFields) {
     const profileKey = resolveFieldKey(field);
     if (!profileKey) {
-      console.debug(`${LOG_PREFIX} [Heuristic] No match for field:`, field.id || field.name);
+      console.debug(`${LOG_PREFIX} [Heuristic] No match for field:`, field.id || field.name || field.label);
       continue;
     }
 
@@ -648,18 +690,13 @@ function mapFieldsLocally(formFields, userProfile) {
     let stringValue;
 
     if (Array.isArray(rawValue)) {
-      // e.g. visa_status_by_country → "EU: Citizen · India: Requires Sponsorship"
-      //      cefr_languages         → "English (C1), Hindi (Native)"
-      //      tech_stack             → "React, FastAPI, Python"
       if (rawValue.length === 0) continue;
 
       const first = rawValue[0];
       if (typeof first === "object" && first !== null) {
         // Array of objects — join key→value pairs
         stringValue = rawValue
-          .map((item) =>
-            Object.values(item).join(" ").trim()
-          )
+          .map((item) => Object.values(item).join(" ").trim())
           .join(", ");
       } else {
         // Simple string array
@@ -669,22 +706,23 @@ function mapFieldsLocally(formFields, userProfile) {
       stringValue = String(rawValue);
     }
 
-    // ── Determine the injection key (id preferred, else name) ──
-    const injectionKey = field.id || field.name;
-    if (!injectionKey) continue;  // already filtered by scrapeFormFields, but be safe
-
-    mapping[injectionKey] = stringValue;
+    // Push the live node reference — no second lookup needed in injectFieldValues
+    mappedItems.push({
+      node: field.node,
+      value: stringValue,
+      label: field.label || field.id || field.name || profileKey,
+    });
 
     console.debug(
-      `${LOG_PREFIX} [Heuristic] "${injectionKey}" → "${profileKey}" = "${stringValue}"`
+      `${LOG_PREFIX} [Heuristic] "${field.label || field.id || field.name}" → "${profileKey}" = "${stringValue}"`
     );
   }
 
   console.info(
-    `${LOG_PREFIX} [Heuristic] Resolved ${Object.keys(mapping).length} field mapping(s) from ${formFields.length} scraped field(s).`
+    `${LOG_PREFIX} [Heuristic] Resolved ${mappedItems.length} field mapping(s) from ${formFields.length} scraped field(s).`
   );
 
-  return mapping;
+  return mappedItems;
 }
 
 
@@ -699,53 +737,413 @@ function mapFieldsLocally(formFields, userProfile) {
 //   • `return true` is the LAST synchronous statement in the listener,
 //     placed outside the async IIFE so it always executes immediately.
 
+// ============================================================
+//  Resume File Injector — Big Tech Bypass (Phase 3.4)
+// ============================================================
+//
+//  Uses the DataTransfer API to simulate a human "drag and drop"
+//  file event.  This is the only reliable cross-ATS technique for
+//  programmatically populating <input type="file"> fields because:
+//
+//    • The browser blocks direct assignment of `input.files` (it is
+//      a read-only FileList in normal circumstances).
+//    • DataTransfer.files is writable and is what the browser itself
+//      uses internally when the user drops a file.
+//    • The subsequent `change` event is indistinguishable from a
+//      real user interaction at the framework level.
+
+/**
+ * Convert the profile's Base64-encoded PDF into a simulated file drop on
+ * the first matching <input type="file"> found in the DOM.
+ *
+ * Step 1: Accepts the full userProfile object (not just base64String) so
+ *         we can derive a dynamic, ATS-organic file name from the candidate's
+ *         real name — e.g. "Rishwik_Mishra_Resume.pdf" — rather than a
+ *         static string that bot-detection heuristics can fingerprint.
+ *
+ * Matching criteria for the upload target (any attribute containing):
+ *   id / name / accept → "resume", "cv", "upload", or ".pdf"
+ *
+ * @param {Object|null} userProfile  Full EuroProfile from chrome.storage.local.
+ *                                   Returns immediately if falsy or has no resume.
+ */
+function injectResumeFile(userProfile) {
+  // ── Step 1: Early return guard ───────────────────────────────────
+  if (!userProfile || !userProfile.resume_base64) {
+    console.debug(`${LOG_PREFIX} [Resume] No resume_base64 in profile — skipping file injection.`);
+    return;
+  }
+
+  const base64String = userProfile.resume_base64;
+
+  // ── Step 2: Dynamic file name from real candidate names ──────────
+  //
+  // Trim and replace interior whitespace with underscores so the file
+  // name looks like a human typed it ("Rishwik_Mishra_Resume.pdf").
+  // Fallbacks prevent an ugly "undefined_undefined_Resume.pdf" if the
+  // profile happens to be missing name fields.
+  const firstName = userProfile.legal_first_name
+    ? userProfile.legal_first_name.trim().replace(/\s+/g, "_")
+    : "Candidate";
+  const lastName = userProfile.legal_last_name
+    ? userProfile.legal_last_name.trim().replace(/\s+/g, "_")
+    : "Resume";
+  const dynamicFileName = `${firstName}_${lastName}_Resume.pdf`;
+
+  // ── 3. Find the upload input (Shadow-DOM aware, Workday-hardened) ──
+  //
+  //  Problem: Workday deeply nests <input type="file"> inside Web
+  //  Components.  The element itself carries no meaningful id/name and
+  //  its `accept` attribute is often empty, so the old 3-field check
+  //  produced zero signal and silently skipped the upload.
+  //
+  //  Solution — Deep Context Climber:
+  //    a. Walk up to 4 ancestor levels and concatenate their innerText.
+  //    b. Separately extract data-automation-id from the input itself or
+  //       the nearest ancestor that carries one (Workday's primary signal).
+  //    c. Combine everything — own attributes + automationId + ancestor
+  //       text — into one lowercase contextString tested against an
+  //       expanded keyword regex.
+  //
+  //  Regex coverage:
+  //    resume / cv / upload / .pdf   — generic ATS patterns
+  //    document / attachment / file  — iCIMS / Taleo label text
+  //    resumeUpload / resumeAttach   — Workday automation-id values
+  //    fileupload                    — Greenhouse input name pattern
+  const allFileInputs = querySelectorAllDeep('input[type="file"]');
+
+  const RESUME_KEYWORDS =
+    /resume|cv|upload|\.pdf|document|attachment|resumeupload|resumeattach|fileupload/i;
+
+  const target = allFileInputs.find((input) => {
+    // ── a. Deep Context Climber: walk up 5 ancestor levels (Shadow-DOM piercing) ────────────
+    let parentText = "";
+    // Start with parent, or jump the shadow boundary immediately if it's the root child
+    let currentParent = input.parentElement || (input.getRootNode && input.getRootNode().host);
+    let depth = 0;
+
+    // Climb up to 5 levels, crossing shadow boundaries
+    while (currentParent && depth < 5) {
+      parentText += (currentParent.innerText || currentParent.textContent || "") + " ";
+      
+      // Move up to the next parent, or jump the shadow boundary
+      currentParent = currentParent.parentElement || (currentParent.getRootNode && currentParent.getRootNode().host);
+      depth++;
+    }
+
+    // ── b. Workday automation-id extraction ───────────────────────────
+    //  Check the input itself first; if absent, walk up to the nearest
+    //  ancestor that carries one (Workday wraps inputs in a component
+    //  whose root element holds the data-automation-id).
+    const automationId =
+      input.getAttribute("data-automation-id") ||
+      (input.closest("[data-automation-id]")?.getAttribute("data-automation-id")) ||
+      "";
+
+    // ── c. Comprehensive context string ───────────────────────────────
+    //
+    //  Two-step normalization:
+    //    1. Lowercase — standard case-insensitive baseline.
+    //    2. NFD + diacritic strip — decomposes composed Unicode characters
+    //       into base letter + combining accent, then removes the accents.
+    //       This turns "résumé" → "resume" so the RESUME_KEYWORDS regex
+    //       matches Google Careers (and any other portal using accented text)
+    //       without requiring us to add accent variants to the regex itself.
+    const rawContext = [
+      input.id,
+      input.name,
+      input.accept,
+      input.getAttribute("aria-label") || "",
+      automationId,
+      parentText,
+    ].join(" | ").toLowerCase();
+
+    // Normalize diacritics (e.g., turn "résumé" into "resume")
+    const contextString = rawContext.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+    return RESUME_KEYWORDS.test(contextString);
+  });
+
+  if (!target) {
+    console.warn(
+      `${LOG_PREFIX} [Resume] No <input type="file"> matched resume keywords ` +
+      `(checked id, name, accept, aria-label, data-automation-id, and 4-level parent text) — skipping.`
+    );
+    return;
+  }
+
+  // ── 3b. Dual-Layer Idempotency Guard — Echo Effect + SPA Visual State ──
+  //
+  //  Two failure modes addressed here:
+  //
+  //  Failure Mode A — "Classic Echo" (all SPAs):
+  //    Our `change` event → DOM mutation → MutationObserver fires →
+  //    executeZanshinStrike() called again → injectResumeFile() called again.
+  //    Guard 1 catches this: the native FileList still holds our File object.
+  //
+  //  Failure Mode B — "Workday React Clear" (Workday / React SPAs):
+  //    After reading the file, the React framework renders a "Successfully
+  //    Uploaded" card and then programmatically CLEARS the underlying
+  //    <input type="file"> state (input.files becomes empty).  Guard 1
+  //    sees files.length === 0 and would incorrectly proceed to inject again.
+  //    Guard 2 catches this: the filename is already visible in the rendered
+  //    DOM text — proof the upload card has been painted.
+
+  // Guard 1: Native input state (fast, O(1))
+  if (target.files && target.files.length > 0) {
+    console.log(`[Zanshin] Native input already holds a file. Skipping.`);
+    return;
+  }
+
+  // Guard 2: Visual State (React/SPA Bypass)
+  // Scan the rendered page text for the dynamically generated filename.
+  // If it's visible anywhere on screen the upload card was already rendered —
+  // injecting again would duplicate the file and trigger a second change event.
+  if (document.body.innerText.includes(dynamicFileName)) {
+    console.warn(
+      `[Zanshin] Visual State Guard triggered: '${dynamicFileName}' is already rendered on screen. ` +
+      `Skipping duplicate injection.`
+    );
+    return;
+  }
+
+  // ── 4. Base64 → Blob → File ───────────────────────────────────────
+  //
+  // atob() decodes Base64 to a binary string; we then copy each char's
+  // char-code into a Uint8Array so the Blob constructor receives raw bytes.
+  let uint8;
+  try {
+    const binaryString = atob(base64String);
+    uint8 = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      uint8[i] = binaryString.charCodeAt(i);
+    }
+  } catch (decodeErr) {
+    console.error(`${LOG_PREFIX} [Resume] Base64 decode failed:`, decodeErr);
+    return;
+  }
+
+  const blob = new Blob([uint8], { type: "application/pdf" });
+  // Use the dynamic name — ATS systems log the File.name property;
+  // a generic "Zanshin_Resume.pdf" is a trivial bot-detection signal.
+  const file = new File([blob], dynamicFileName, { type: "application/pdf" });
+
+  // ── 5. DataTransfer drag-and-drop simulation ──────────────────────
+  //
+  // Assigning directly to input.files throws a TypeError (read-only).
+  // DataTransfer.files IS writable; assigning it to input.files then
+  // fires an authentic FileList that the ATS framework trusts.
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  target.files = dt.files;
+
+  // ── 6. Dispatch change event — framework state sync ──────────────
+  target.dispatchEvent(new Event("change", { bubbles: true }));
+
+  // ── 7. Visual feedback ────────────────────────────────────────────
+  target.style.outline = "2px solid #34a853";
+  setTimeout(() => { target.style.outline = ""; }, 2000);
+
+  console.info(
+    `${LOG_PREFIX} [Resume] ✅ Injected "${dynamicFileName}" (${file.size} bytes) ` +
+    `via DataTransfer into ${target.id || target.name || '<file input>'}.`
+  );
+}
+
+// ============================================================
+//  executeZanshinStrike — Idempotent Autofill Pipeline
+// ============================================================
+//
+//  Encapsulates the full scrape → map → inject pipeline so it can
+//  be called from both the message listener (user click) AND the
+//  MutationObserver (autonomous SPA re-fire).
+//
+//  Returns an object: { success, injected, error? }
+//  The caller decides whether to relay this to the popup or log it.
+
+/**
+ * Run the full Zanshin autofill pipeline against the current DOM.
+ *
+ * Idempotent: the Human Guard inside injectFieldValues() ensures that
+ * already-filled fields are never overwritten, so calling this function
+ * multiple times on the same page is safe.
+ *
+ * @returns {Promise<{success: boolean, injected: number, error?: string}>}
+ */
+async function executeZanshinStrike() {
+  console.info(`${LOG_PREFIX} ⚡ executeZanshinStrike — scanning DOM.`);
+
+  try {
+    // 1. Load the EuroProfile from chrome.storage.local
+    //    NOTE: This is the first Chrome API call in the pipeline.
+    //    If the extension was reloaded/updated while this tab was open,
+    //    Chrome invalidates the extension context — every chrome.* API
+    //    call from this point throws "Extension context invalidated".
+    //    The catch block below handles that specific case gracefully.
+    const stored = await chrome.storage.local.get(["zanshin_user_profile"]);
+    const userProfile = stored.zanshin_user_profile;
+
+    if (!userProfile) {
+      console.warn(`${LOG_PREFIX} Vault is empty — strike aborted.`);
+      return { success: false, injected: 0, error: "Vault is empty. Load a profile in the extension popup first." };
+    }
+
+    // 2. Scrape visible form fields (honeypot-safe, Shadow-DOM aware)
+    const formFields = scrapeFormFields();
+
+    if (formFields.length === 0) {
+      console.warn(`${LOG_PREFIX} No form fields detected — strike aborted.`);
+      return { success: false, injected: 0, error: "No form fields detected on this page." };
+    }
+
+    // 3. Deterministic heuristic mapping (zero network cost)
+    const mappedItems = mapFieldsLocally(formFields, userProfile);
+
+    if (mappedItems.length === 0) {
+      console.warn(`${LOG_PREFIX} No fields matched the profile — strike aborted.`);
+      return { success: false, injected: 0, error: "No recognisable form fields matched the profile." };
+    }
+
+    // 4. Inject text fields + resume file concurrently
+    //    The Human Guard inside injectFieldValues() prevents overwriting manual input.
+    await Promise.all([
+      Promise.resolve(injectFieldValues(mappedItems)),
+      Promise.resolve(injectResumeFile(userProfile)),
+    ]);
+
+    const injectedCount = mappedItems.length;
+    console.info(`${LOG_PREFIX} ✅ Strike complete — ${injectedCount} field(s) processed.`);
+    return { success: true, injected: injectedCount };
+
+  } catch (error) {
+    // ── Graceful Shutdown — Extension Context Invalidated ───────────────
+    //
+    //  Triggered when: the extension is updated or force-reloaded via
+    //  chrome://extensions while the content script is still alive in
+    //  a tab.  Chrome tears down the old context but the MutationObserver
+    //  (and any pending debounce timers) keep firing — each call to a
+    //  chrome.* API then throws this specific error message.
+    //
+    //  Action: disconnect the orphaned observer, disarm isZanshinActive,
+    //  and return silently.  The user must click Autofill again once the
+    //  new extension context is ready.
+    if (error.message && error.message.includes("Extension context invalidated")) {
+      console.warn(`[Zanshin] Extension was reloaded. Disconnecting orphaned SPA Observer.`);
+      if (_spaObserverRef) {
+        _spaObserverRef.disconnect();
+        _spaObserverRef = null; // release the singleton so it can be re-created
+      }
+      isZanshinActive = false;
+      return { success: false, injected: 0, error: "Extension reloaded — please click Autofill again." };
+    }
+
+    // All other errors are unexpected — surface them for debugging
+    console.error(`[Zanshin] Strike failed:`, error);
+    return { success: false, injected: 0, error: error.message };
+  }
+}
+
+// ============================================================
+//  initializeSPAObserver — Smart MutationObserver
+// ============================================================
+//
+//  Watches document.body for new child nodes that contain form inputs
+//  (i.e. SPA route transitions) and debounces a re-fire of
+//  executeZanshinStrike() 800 ms after the DOM settles.
+//
+//  Safety guarantees:
+//    1. Singleton — only one observer is ever created per content script
+//       lifetime (_spaObserverRef guard).
+//    2. No `attributes` watch — our own synthetic `input`/`change` event
+//       dispatches do NOT trigger this observer.
+//    3. isZanshinActive flag — observer is passive until the user has
+//       clicked Autofill at least once.
+//    4. Human Guard in injectFieldValues — prevents overwriting on re-fire.
+
+/**
+ * Instantiate (or no-op if already running) the SPA MutationObserver.
+ * Call once after the first successful ACTION_AUTOFILL.
+ */
+function initializeSPAObserver() {
+  // Singleton guard — do not register a second observer
+  if (_spaObserverRef) {
+    console.debug(`${LOG_PREFIX} [SPA] Observer already active — skipping re-init.`);
+    return;
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    // ── Filter: only care about mutations that added form-bearing nodes ──
+    let hasNewFormNode = false;
+
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        // Only HTMLElements can host inputs
+        if (!(node instanceof HTMLElement)) continue;
+
+        // Does this subtree contain at least one form control?
+        if (
+          node.matches("input, select, textarea") ||
+          node.querySelector("input, select, textarea")
+        ) {
+          hasNewFormNode = true;
+          break;
+        }
+      }
+      if (hasNewFormNode) break;
+    }
+
+    if (!hasNewFormNode) return; // nothing relevant mutated
+
+    // ── Debounce: reset the 800 ms quiet-period timer ────────────────
+    clearTimeout(observerTimeout);
+    observerTimeout = setTimeout(async () => {
+      if (!isZanshinActive) return; // user hasn't armed us yet
+
+      console.info(`${LOG_PREFIX} [SPA] New form nodes detected — firing autonomous strike.`);
+      try {
+        await executeZanshinStrike();
+      } catch (err) {
+        console.error(`${LOG_PREFIX} [SPA] Autonomous strike failed:`, err);
+      }
+    }, 800);
+  });
+
+  // Watch only childList + subtree — NOT attributes, to avoid loops
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  _spaObserverRef = observer; // store singleton reference
+  console.info(`${LOG_PREFIX} [SPA] MutationObserver armed — watching for SPA transitions.`);
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
-  // ── ACTION_AUTOFILL — heuristic regex path (no network call) ─
+  // ── ACTION_AUTOFILL — Zero-Touch Autonomy (Phase 3.5) ───────
+  //
+  //  On first click:
+  //    1. Arm isZanshinActive so the SPA observer is live for this tab.
+  //    2. Run executeZanshinStrike() on the currently visible form.
+  //    3. Spin up initializeSPAObserver() (singleton — safe to call again).
+  //    4. Respond to the popup with the result of the initial strike.
   if (message.action === ACTION_AUTOFILL) {
-    console.info(`${LOG_PREFIX} ACTION_AUTOFILL received — starting offline heuristic mapping.`);
+    console.info(`${LOG_PREFIX} ACTION_AUTOFILL received — arming Zero-Touch Autonomy.`);
 
     (async () => {
       try {
-        // 1. Scrape visible form fields
-        const formFields = scrapeFormFields();
+        // ── Step 3a: Arm the observer for the tab's lifetime ─────────
+        isZanshinActive = true;
 
-        if (formFields.length === 0) {
-          console.warn(`${LOG_PREFIX} No valid form fields found on this page.`);
-          sendResponse({ success: false, error: "No form fields detected on this page." });
-          return;
-        }
+        // ── Step 3b: Immediately autofill the visible form ───────────
+        const result = await executeZanshinStrike();
 
-        // 2. Load the EuroProfile from chrome.storage.local (set by Mock Vault / live parser)
-        const stored = await chrome.storage.local.get(["zanshin_user_profile"]);
-        const userProfile = stored.zanshin_user_profile;
+        // ── Step 3c: Start the SPA observer (no-op if already running) ─
+        initializeSPAObserver();
 
-        if (!userProfile) {
-          console.warn(`${LOG_PREFIX} No profile found in vault — load one first (press 1–4).`);
-          sendResponse({ success: false, error: "Vault is empty. Load a profile in the extension popup first." });
-          return;
-        }
-
-        // 3. Resolve mapping using the heuristic regex engine (zero network cost)
-        const mapping = mapFieldsLocally(formFields, userProfile);
-
-        if (Object.keys(mapping).length === 0) {
-          console.warn(`${LOG_PREFIX} Heuristic engine found no matching fields.`);
-          sendResponse({ success: false, error: "No recognisable form fields matched the profile." });
-          return;
-        }
-
-        // 4. Inject resolved values into the DOM
-        injectFieldValues(mapping);
-        const injectedCount = Object.keys(mapping).length;
-        console.info(`${LOG_PREFIX} ✅ Heuristic autofill complete — ${injectedCount} field(s).`);
-
-        // 5. SUCCESS — respond to popup
-        sendResponse({ success: true, injected: injectedCount });
+        // ── Relay result to popup ─────────────────────────────────────
+        sendResponse(result);
 
       } catch (err) {
-        console.error(`${LOG_PREFIX} ❌ Autofill pipeline threw:`, err);
-        sendResponse({ success: false, error: err.message });
+        console.error(`${LOG_PREFIX} ❌ ACTION_AUTOFILL threw:`, err);
+        sendResponse({ success: false, injected: 0, error: err.message });
       }
     })();
 

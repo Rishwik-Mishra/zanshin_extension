@@ -440,6 +440,63 @@
     .body::-webkit-scrollbar { width: 4px; }
     .body::-webkit-scrollbar-track { background: transparent; }
     .body::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+
+    /* ── Per-profile Resume Upload (Relational Vault) ──────── */
+    .vault-upload-section {
+      margin-top: 10px;
+      border-top: 1px solid #27272a;
+      padding-top: 10px;
+    }
+
+    .vault-upload-label {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      color: #52525b;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: 8px;
+    }
+
+    .vault-upload-trigger {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 9px 12px;
+      background: #18181b;
+      border: 1.5px dashed rgba(52,211,153,.25);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      font-size: 12px;
+      font-weight: 500;
+      color: #71717a;
+    }
+
+    .vault-upload-trigger:hover {
+      border-color: rgba(52,211,153,.55);
+      background: rgba(52,211,153,.04);
+      color: #34d399;
+    }
+
+    .vault-upload-trigger svg {
+      width: 13px;
+      height: 13px;
+      flex-shrink: 0;
+      color: #34d399;
+    }
+
+    #uploadStatus {
+      margin-top: 7px;
+      font-size: 11px;
+      line-height: 1.5;
+      min-height: 16px;
+      color: #71717a;
+    }
+
+    #uploadStatus.status-ok  { color: #34d399; }
+    #uploadStatus.status-err { color: #f87171; }
   </style>
 </head>
 <body>
@@ -566,6 +623,30 @@
 
       <!-- Reset button -->
       <button id="reset-btn">↩ Upload a different resume</button>
+
+      <!-- ── Per-profile Resume Upload (Relational Vault) ──── -->
+      <div class="vault-upload-section">
+        <span class="vault-upload-label">Attach PDF Resume to This Profile</span>
+
+        <!-- Visible trigger button — clicking it fires the hidden input -->
+        <div class="vault-upload-trigger" id="vault-upload-trigger" role="button" tabindex="0"
+             aria-label="Upload PDF resume for this profile">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3
+                 M6.75 19.5a4.5 4.5 0 01-1.41-8.775
+                 5.25 5.25 0 0110.233-2.33 3 3 0
+                 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
+          </svg>
+          <span id="vault-upload-trigger-label">Click to attach PDF (max 2 MB)</span>
+        </div>
+
+        <!-- Hidden native file input (Relational Vault anchor) -->
+        <input type="file" id="resumeUpload" accept="application/pdf" class="hidden" />
+
+        <!-- Inline status feedback -->
+        <p id="uploadStatus"></p>
+      </div>
     </div>
 
   </div><!-- end .body -->
